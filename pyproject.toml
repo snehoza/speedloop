@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "speedloop"
+version = "0.1.0"
+description = "Noise-aware speed measurement: ABBA timing with an A/A noise floor, span ledgers, golden-output exactness and a cache registry."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+numeric = ["numpy", "pillow"]
+
+[project.scripts]
+speedloop = "speedloop.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["speedloop*"]
