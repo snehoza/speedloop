@@ -19,6 +19,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,7 +57,8 @@ def run(base: list[str], cand: list[str], pairs: int = 2, aa_pairs: int = 1, war
     ``cpus`` pins every run to that many cores; ``parallel`` runs that many copies of each command at once
     (a load check). ``lock`` holds the heavy-job lock (True = default path, a Path = that file, False =
     none). Before each run the machine must drop below ``quiet_threshold`` % CPU, waiting up to
-    ``quiet_wait`` seconds (None disables the check).
+    ``quiet_wait`` seconds in total across the schedule (None disables the check): on a machine that never
+    gets quiet, the first runs use up the budget and the rest start at once, flagged in the receipt.
     """
     commands = {"A": base, "A2": base, "B": cand}
     limit = CpuLimit(cpus)
@@ -69,9 +71,14 @@ def run(base: list[str], cand: list[str], pairs: int = 2, aa_pairs: int = 1, war
                 measure(commands[label], cwd, timeout, limit, parallel)
         runs = []
         order = schedule(pairs, aa_pairs)
+        wait_left = quiet_wait
         for i, label in enumerate(order, 1):
-            busy = machine.wait_until_quiet(quiet_threshold, quiet_wait, progress=progress) \
-                if quiet_threshold is not None else None
+            busy = None
+            if quiet_threshold is not None:
+                started = time.monotonic()
+                busy = machine.wait_until_quiet(quiet_threshold, wait_left,
+                                                progress=progress if wait_left > 0 else None)
+                wait_left = max(0.0, wait_left - (time.monotonic() - started))
             metrics = measure(commands[label], cwd, timeout, limit, parallel)
             runs.append({"arm": label, "busy_pct_before": busy, "metrics": metrics})
             progress(f"[{i}/{len(order)}] {label} wall_s={metrics['wall_s']:.3f}")
@@ -93,8 +100,8 @@ def arms(receipt: dict) -> dict[str, dict[str, list[float]]]:
 
 
 def _table(base: dict, cand: dict, aa: dict, higher_is_better) -> tuple[list[str], list[noise.Verdict]]:
-    lines = ["| metric | A/A spread | base median | candidate median | delta | noise | verdict |",
-             "| --- | ---: | ---: | ---: | ---: | ---: | --- |"]
+    lines = ["| metric | A/A spread | base median | candidate median | delta | delta % | noise | verdict |",
+             "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |"]
     verdicts = []
     for metric in sorted(set(base) & set(cand)):
         # A/A spread: how far the same code ranges across every base-side run (A and its A/A twin).
@@ -102,8 +109,9 @@ def _table(base: dict, cand: dict, aa: dict, higher_is_better) -> tuple[list[str
         v = noise.compare(base[metric], cand[metric], aa_spread, lower_is_better=metric not in higher_is_better)
         verdicts.append(v)
         aa_txt = "" if aa_spread is None else f"{aa_spread:.4g}"
+        pct = f"{100 * v.delta / v.base_median:+.1f}%" if v.base_median else ""
         lines.append(f"| {metric} | {aa_txt} | {v.base_median:.4g} | {v.cand_median:.4g} | {v.delta:+.4g} | "
-                     f"{v.noise:.4g} | {v.verdict} |")
+                     f"{pct} | {v.noise:.4g} | {v.verdict} |")
     return lines, verdicts
 
 

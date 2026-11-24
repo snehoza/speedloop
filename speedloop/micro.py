@@ -56,17 +56,33 @@ def _time(fn, arg, has_input: bool, inner: int) -> float:
             gc.enable()
 
 
-def compare(base, cand, make_input=None, pairs: int = 5, aa_pairs: int = 1, inner: int = 1, warmup: int = 1,
-            check=equal) -> dict:
-    """Return a receipt in ``bench`` format (metric ``time_s`` per call) plus an exactness result."""
+def calibrate(fn, arg, has_input: bool, min_sample_s: float = 0.05, limit: int = 1_000_000) -> int:
+    """Smallest power-of-ten loop count whose total time reaches ``min_sample_s``."""
+    inner = 1
+    while inner < limit and _time(fn, arg, has_input, inner) * inner < min_sample_s:
+        inner *= 10
+    return inner
+
+
+def compare(base, cand, make_input=None, pairs: int = 5, aa_pairs: int = 1, inner: int | None = None,
+            warmup: int = 1, check=equal, min_sample_s: float = 0.05) -> dict:
+    """Return a receipt in ``bench`` format (metric ``time_s`` per call) plus an exactness result.
+
+    ``inner=None`` picks the loop count per sample so each sample takes at least ``min_sample_s`` (timer
+    resolution and call overhead stay negligible). The exactness check gives each side its own fresh input;
+    the timed calls share one input, so functions that modify their input in place must copy it first.
+    """
     has_input = make_input is not None
-    arg = make_input() if has_input else None
-    call = (lambda f: f(arg)) if has_input else (lambda f: f())
-    rb, rc = call(base), call(cand)
+    run = lambda f, x: f(x) if has_input else f()  # noqa: E731
+    rb = run(base, make_input() if has_input else None)
+    rc = run(cand, make_input() if has_input else None)
     exact = bool(check(rb, rc))
+    arg = make_input() if has_input else None
     for _ in range(warmup):
-        call(base)
-        call(cand)
+        run(base, arg)
+        run(cand, arg)
+    if inner is None:
+        inner = max(calibrate(base, arg, has_input, min_sample_s), calibrate(cand, arg, has_input, min_sample_s))
     fns = {"A": base, "A2": base, "B": cand}
     runs = [{"arm": arm, "metrics": {"time_s": _time(fns[arm], arg, has_input, inner)}}
             for arm in bench.schedule(pairs, aa_pairs)]

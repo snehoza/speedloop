@@ -81,12 +81,29 @@ def breakdown(run: dict, main_thread: str | None = None):
     return wall, rows
 
 
+def _main_thread(runs) -> str | None:
+    """The thread that holds the most span time across all runs of one action."""
+    totals: dict = defaultdict(float)
+    for run in runs:
+        for s in run.get("spans", []):
+            totals[s.get("thread", "main")] += max(0.0, min(s["end"], run["end"]) - max(s["start"], run["start"]))
+    return max(totals, key=totals.get) if totals else None
+
+
 def load(paths, main_thread=None):
-    """-> {action: [(wall_ms, rows), ... one per run]}"""
-    out = defaultdict(list)
+    """-> {action: [(wall_ms, rows), ... one per run]}
+
+    Without ``main_thread`` the thread with the most span time across all runs of an action is used,
+    the same for every run, so the trees are comparable.
+    """
+    by_action = defaultdict(list)
     for path in paths:
         for run in json.loads(Path(path).read_text(encoding="utf-8"))["runs"]:
-            out[run["action"]].append(breakdown(run, main_thread))
+            by_action[run["action"]].append(run)
+    out = defaultdict(list)
+    for action, runs in by_action.items():
+        thread = main_thread or _main_thread(runs)
+        out[action] = [breakdown(run, thread) for run in runs]
     return out
 
 

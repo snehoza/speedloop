@@ -35,10 +35,10 @@ speedloop bench --base "python examples/demo/work.py --impl slow" \
 ```
 
 ```text
-| metric       | A/A spread | base median | candidate median | delta   | noise   | verdict |
-| histogram_s  | 0.03025    | 0.5117      | 0.02237          | -0.4894 | 0.03025 | faster  |
-| peak_rss_mib | 0.01172    | 9.391       | 9.391            | +0      | 0.01172 | noise   |
-| wall_s       | 0.03921    | 0.6807      | 0.1847           | -0.496  | 0.03921 | faster  |
+| metric       | A/A spread | base median | candidate median | delta   | delta % | noise   | verdict |
+| histogram_s  | 0.03025    | 0.5117      | 0.02237          | -0.4894 | -95.6%  | 0.03025 | faster  |
+| peak_rss_mib | 0.01172    | 9.391       | 9.391            | +0      | +0.0%   | 0.01172 | noise   |
+| wall_s       | 0.03921    | 0.6807      | 0.1847           | -0.496  | -72.9%  | 0.03921 | faster  |
 ```
 
 ## The noise rule
@@ -68,10 +68,11 @@ speedloop bench --base CMD --cand CMD [--pairs 2] [--aa-pairs 1] [--warmup 1]
   - **macOS:** has no affinity API, so only the thread variables apply, with a warning.
 - **`--parallel N`.** Starts N copies of each run at once, to catch changes that win alone but lose under load. Each metric is the worst copy, and `peak_rss_mib_total` is the sum.
 - **Quiet machine.** The whole schedule holds the heavy-job lock (`~/.speedloop/heavy.lock`, or `$SPEEDLOOP_LOCK`).
-  - Before each run, `bench` waits until system CPU use is below `--quiet-threshold` (default 25%), for up to `--quiet-wait` seconds.
+  - Before each run, `bench` waits until system CPU use is below `--quiet-threshold` (default 25%). The `--quiet-wait` budget (default 60 s) covers the whole schedule, so a machine that never gets quiet, like a busy CI runner, costs at most that much waiting.
   - The value is recorded in the receipt, and the report warns if a run started on a busy machine.
   - Run test suites and builds beside a measurement with `speedloop locked -- CMD`, so they wait their turn.
   - `--no-lock` and `--quiet-threshold -1` switch these off.
+- **GPU code.** GPU work runs asynchronously, so a program that times GPU steps itself must synchronise (for example `torch.cuda.synchronize()`) before reading the clock, and before printing `SPEEDLOOP_METRIC` lines. `wall_s` is always end to end.
 - **Screening against an earlier receipt.** `speedloop compare old.json new.json` compares a new candidate with a base measured earlier, for example last round's. The two sides weren't interleaved, so treat it as a screen and confirm with a `bench` before claiming a gain.
 
 ## golden
@@ -144,7 +145,9 @@ r = micro.compare(old_kernel, new_kernel, make_input=lambda: load_test_array(), 
 print(micro.report(r))      # "Exact: identical results." + the verdict table
 ```
 
-Results are compared first. The comparison handles numpy arrays (shape, dtype and values), nested lists, tuples and dicts, and plain values. The two functions are then timed in A/A + ABBA order with the garbage collector paused.
+Results are compared first, each side on its own fresh input. The comparison handles numpy arrays (shape, dtype and values), nested lists, tuples and dicts, and plain values. The two functions are then timed in A/A + ABBA order with the garbage collector paused.
+
+Each sample loops the function enough times to take at least 50 ms (`min_sample_s`), so timer resolution doesn't matter even for sub-microsecond functions. The timed calls share one input, so a function that changes its input in place must copy it first.
 
 ## Caches must pay for themselves
 
@@ -157,7 +160,7 @@ pattern = "['\"](cache_[a-z0-9_]+)['\"]"
 row = "^\\| `([A-Za-z0-9_.]+)` \\|"
 ```
 
-`speedloop registry check` fails on any cache name found in code but missing from the table, or listed in the table but gone from the code. Run it in CI.
+`speedloop registry check` fails on any cache name found in code but missing from the table, or listed in the table but gone from the code. Run it in CI. Add `exempt = ["name", ...]` for names that match the pattern but are deliberately not listed.
 
 `speedloop keep 2.4 180` → `keep: 1.33 s saved per 100 MiB`. The rule:
 - **keep** a cache that saves at least 1 s for every 100 MiB it holds;

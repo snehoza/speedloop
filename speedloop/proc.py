@@ -38,6 +38,9 @@ class CommandFailed(RuntimeError):
 
 # --- CPU pinning ---------------------------------------------------------------------------------------
 
+_SPAWN_LOCK = threading.Lock()  # one spawn at a time while this process's own mask is narrowed
+
+
 class CpuLimit:
     """Run children on ``cpus`` cores with thread pools sized to match.
 
@@ -77,12 +80,13 @@ class CpuLimit:
         if self._win_mask is None:
             yield
             return
-        previous = win_affinity()
-        win_set_affinity(self._win_mask)
-        try:
-            yield
-        finally:
-            win_set_affinity(previous)
+        with _SPAWN_LOCK:  # parallel copies must not save each other's narrowed mask as "previous"
+            previous = win_affinity()
+            win_set_affinity(self._win_mask)
+            try:
+                yield
+            finally:
+                win_set_affinity(previous)
 
 
 def _k32():

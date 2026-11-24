@@ -135,9 +135,25 @@ def _golden(args) -> int:
                     made += 1
         print(f"{made} review file(s). Image sheets: golden | new | difference, at full resolution.")
         return 0
+    counts: dict = {}
     for rel, res in result["files"].items():
-        if res["status"] != "identical":
-            print(rel, json.dumps(res))
+        counts[res["verdict"]] = counts.get(res["verdict"], 0) + 1
+        if res["status"] == "identical":
+            continue
+        d = res.get("diff", {})
+        if res["status"] != "differs":
+            detail = res["status"]
+        elif d.get("kind") == "text":
+            detail = f"text: {d['lines_changed']} of {d['lines']} lines changed"
+        elif d.get("kind") == "binary":
+            detail = "binary: differs"
+        elif d.get("structure_changed") or d.get("non_numeric_changed"):
+            detail = f"{d['kind']}: structure or non-numeric values changed ({d['non_numeric_changed']} values)"
+        else:
+            detail = (f"{d['kind']}: {d['changed']} of {d['values']} values changed, "
+                      f"max |diff| {d['max_abs']:.4g} (relative {d['max_rel']:.3g})")
+        print(f"[{res['verdict']}] {rel}: {detail}")
+    print(", ".join(f"{n} {v}" for v, n in sorted(counts.items(), key=lambda kv: exact.ORDER.index(kv[0]))))
     print(f"VERDICT: {result['verdict'].upper()}")
     ok = result["identical"] if args.strict else result["verdict"] in ("identical", "adopt")
     return 0 if ok else 1

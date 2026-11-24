@@ -7,6 +7,7 @@ Configure it in ``pyproject.toml``::
     code = ["src/**/*.py"]                       # files to scan
     pattern = "['\\"](cache_[a-z0-9_]+)['\\"]"    # regex; group 1 is the cache name as it appears in code
     row = "^\\| `([A-Za-z0-9_.]+)` \\|"           # regex for a table row's first cell
+    exempt = []                                  # optional: names deliberately left out
 
 Each row should say what the cache holds, its key and invalidation, and its size. The keep rule below
 decides whether a cache is worth its memory.
@@ -45,8 +46,9 @@ def doc_names(doc: Path, row: str) -> set[str]:
 
 def check(root: Path, cfg: dict | None = None) -> dict:
     cfg = cfg or load_config(root)
-    in_code = code_names(root, cfg["code"], cfg["pattern"])
-    in_doc = doc_names(root / cfg["doc"], cfg["row"])
+    exempt = set(cfg.get("exempt", []))
+    in_code = code_names(root, cfg["code"], cfg["pattern"]) - exempt
+    in_doc = doc_names(root / cfg["doc"], cfg["row"]) - exempt
     return {"undocumented": sorted(in_code - in_doc), "stale": sorted(in_doc - in_code)}
 
 
