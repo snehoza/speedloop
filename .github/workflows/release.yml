@@ -1,0 +1,51 @@
+name: release
+
+# Publish to PyPI when a GitHub release is published (tag vX.Y.Z matching pyproject.toml).
+# Uses PyPI trusted publishing: no token is stored. One-time setup on pypi.org:
+# pending publisher = owner snehoza, repository speedloop, workflow release.yml, environment pypi.
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tag matches the package version
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          test "${GITHUB_REF_NAME#v}" = "$version" || { echo "tag $GITHUB_REF_NAME != version $version"; exit 1; }
+      - name: Build
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Test the built wheel
+        run: |
+          python -m venv /tmp/check
+          /tmp/check/bin/pip install dist/*.whl numpy pillow
+          cd /tmp && /tmp/check/bin/speedloop --help > /dev/null
+          /tmp/check/bin/python -c "import speedloop, importlib.resources as r; assert r.files('speedloop').joinpath('templates','SPEED_QUEUE.md').is_file(); print(speedloop.__version__)"
+          cp -r "$GITHUB_WORKSPACE/tests" /tmp/tests && cp -r "$GITHUB_WORKSPACE/skills" /tmp/skills
+          cd /tmp && /tmp/check/bin/python -m unittest discover -s tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -2,7 +2,7 @@
 
 Make code faster and be able to prove it: every claimed gain is bigger than run-to-run noise, the output didn't change, and memory didn't quietly grow.
 
-Most "it's 12% faster now" claims come from timing the old version a few times, then the new one a few times, and comparing averages. On a real machine, the same code easily varies by more than that between runs, and a background build or a test suite running beside the benchmark can move the numbers further. Speed Loop turns the careful way into a handful of commands, plus an [agent skill](skills/speedloop/SKILL.md) that runs whole optimisation rounds with them.
+Most "it's 12% faster now" claims come from timing the old version a few times, then the new one a few times, and comparing averages. On a real machine, the same code easily varies by more than that between runs, and a background build or a test suite running beside the benchmark can move the numbers further. Speed Loop turns the careful way into a handful of commands, plus an [agent skill](https://github.com/snehoza/speedloop/blob/main/skills/speedloop/SKILL.md) that runs whole optimisation rounds with them.
 
 | Command | What it does |
 | --- | --- |
@@ -174,7 +174,7 @@ row = "^\\| `([A-Za-z0-9_.]+)` \\|"
 - `ROUND_REPORT.md`;
 - `CACHES.md`.
 
-The [speedloop skill](skills/speedloop/SKILL.md) describes the whole round:
+The [speedloop skill](https://github.com/snehoza/speedloop/blob/main/skills/speedloop/SKILL.md) describes the whole round:
 1. freeze the output and measure the noise;
 2. profile and fix the biggest hot spot first;
 3. test by risk;
@@ -191,7 +191,7 @@ Any agent that supports the format can use it, and so can one that just reads th
 
 ## Where this comes from
 
-These tools and rules come out of about 30 optimisation rounds on a production image-processing web app. Analysis went from 15.5 s to 5.9 s and the most common edit from up to 3 s to 0.6 s, with byte-identical output. The method also caught a reported regression that was really noise, and caches that cost more memory than they saved. The numbers are in the [case study](docs/CASE_STUDY.md).
+These tools and rules come out of about 30 optimisation rounds on a production image-processing web app. Analysis went from 15.5 s to 5.9 s and the most common edit from up to 3 s to 0.6 s, with byte-identical output. The method also caught a reported regression that was really noise, and caches that cost more memory than they saved. The numbers are in the [case study](https://github.com/snehoza/speedloop/blob/main/docs/CASE_STUDY.md).
 
 ## License
 
