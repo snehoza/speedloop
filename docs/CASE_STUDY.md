@@ -33,10 +33,10 @@ These are the cases the tools exist for.
 | Cache | Saved | Held | s per 100 MiB | Decision |
 | --- | ---: | ---: | ---: | --- |
 | Per-surface precomputed kit | 3.5 s on some edits | +640 MiB | 0.55 | `ask`: owner said off |
-| Prefetching a feature's strip data | small | +170 MiB | well under 0.5 | `drop` |
-| Packed per-surface lighting contexts | 2.7 s | 120 MiB (was 514 MiB dense) | 2.25 | `keep` |
+| Per-surface lighting contexts, stored densely | ~3.3 s per new choice | 514 MiB | 0.64 | `ask`: not adopted |
+| The same contexts, stored sparsely (bit-identical) | ~3.3 s per new choice | 120 MiB | 2.7 | `keep` |
 
-The last row shows the other side of the rule. The cache first held 514 MiB, which wasn't worth its time saving. Storing it sparsely, bit-for-bit identical, cut it to 120 MiB, and then it was.
+The last two rows show the other side of the rule. Stored densely, the cache was in the grey zone. Storing it sparsely, bit-for-bit identical, cut it from 514 to 120 MiB, and then it clearly paid for itself.
 
 **A trade-off that only looks like a win per step.**
 - Preparing an editing feature during analysis made that feature's first use 1.2–2.4 s faster.
