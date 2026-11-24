@@ -58,7 +58,7 @@ Use `--higher-is-better` for metrics such as throughput.
 
 ## Measuring at several CPU counts
 
-A change that wins on 4 cores can lose on 16. `--cpus 4,16` runs the whole schedule once per count, pins each run to that many cores, and sets the usual thread-pool variables (`OMP_NUM_THREADS`, `NUMBA_NUM_THREADS`, ...) to match. Pinning needs Linux (or WSL).
+A change that wins on 4 cores can lose on 16. `--cpus 4,16` runs the whole schedule once per count, pins each run to that many cores, and sets the usual thread-pool variables (`OMP_NUM_THREADS`, `NUMBA_NUM_THREADS`, ...) to match. Pinning works on Linux and Windows (on Windows the child inherits the mask, so it never runs unpinned). macOS has no affinity API, so there only the thread-pool variables are capped, with a warning.
 
 ```bash
 speedloop bench --base "python old.py" --cand "python new.py" --cpus 4,16 --out results/receipt.json

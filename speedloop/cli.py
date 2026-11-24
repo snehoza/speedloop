@@ -36,7 +36,7 @@ def main(argv=None) -> int:
     b.add_argument("--timeout", type=float, default=None)
     b.add_argument("--higher-is-better", nargs="*", default=[], help="metrics where bigger is better")
     b.add_argument("--cpus", default="", help="comma list of CPU counts, e.g. 4,16: the whole schedule runs "
-                   "once per count, pinned to that many cores (Linux)")
+                   "once per count, pinned to that many cores (Linux, Windows; macOS: thread caps only)")
     b.add_argument("--out", type=Path, help="receipt path; with several --cpus, one file per count (name-<n>cpu.json)")
 
     r = sub.add_parser("report", help="re-print the verdict table of a bench receipt")

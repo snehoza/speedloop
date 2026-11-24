@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 import os
+import textwrap
 import threading
 
 from speedloop import bench, exact, ledger, noise, registry
@@ -178,19 +179,33 @@ class TraceTests(unittest.TestCase):
 
 class CpuLimitTests(unittest.TestCase):
     def test_no_limit(self):
-        self.assertEqual(bench.cpu_limit(None), (None, None))
+        limit = bench.CpuLimit(None)
+        self.assertIsNone(limit.env)
 
-    @unittest.skipUnless(hasattr(os, "sched_setaffinity"), "Linux only")
+    @unittest.skipUnless(hasattr(os, "sched_setaffinity") or sys.platform == "win32", "needs Linux or Windows")
     def test_pinned_child_sees_n_cores(self):
-        receipt = bench.run([sys.executable, "-c", "import os;print(f'SPEEDLOOP_METRIC cores={len(os.sched_getaffinity(0))}')"],
-                            [sys.executable, "-c", "print('SPEEDLOOP_METRIC cores=1')"], pairs=1, aa_pairs=0, warmup=0,
-                            progress=lambda *_: None, cpus=1)
-        self.assertEqual(bench.arms(receipt)["A"]["cores"], [1.0, 1.0])
-
-    @unittest.skipIf(hasattr(os, "sched_setaffinity"), "only where pinning is unavailable")
-    def test_clear_error_without_affinity(self):
-        with self.assertRaises(OSError):
-            bench.cpu_limit(2)
+        probe = textwrap.dedent("""
+            import os
+            if hasattr(os, 'sched_getaffinity'):
+                n = len(os.sched_getaffinity(0))
+            else:
+                import ctypes
+                from ctypes import wintypes
+                k = ctypes.WinDLL('kernel32')
+                k.GetCurrentProcess.restype = wintypes.HANDLE
+                a, b = ctypes.c_size_t(), ctypes.c_size_t()
+                k.GetProcessAffinityMask(wintypes.HANDLE(k.GetCurrentProcess()), ctypes.byref(a), ctypes.byref(b))
+                n = bin(a.value).count('1')
+            print(f'SPEEDLOOP_METRIC cores={n}')
+            print('SPEEDLOOP_METRIC omp=' + os.environ['OMP_NUM_THREADS'])
+        """)
+        receipt = bench.run([sys.executable, "-c", probe], [sys.executable, "-c", probe], pairs=1, aa_pairs=0,
+                            warmup=0, progress=lambda *_: None, cpus=1)
+        a = bench.arms(receipt)["A"]
+        self.assertEqual(a["cores"], [1.0, 1.0])
+        self.assertEqual(a["omp"], [1.0, 1.0])
+        if sys.platform == "win32":   # our own mask is restored after each spawn
+            self.assertGreater(bin(bench._win_affinity()).count("1"), 1)
 
 
 if __name__ == "__main__":

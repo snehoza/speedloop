@@ -22,6 +22,7 @@ import shlex
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -53,28 +54,91 @@ THREAD_VARS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NU
                "NUMBA_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
 
 
-def cpu_limit(cpus: int | None) -> tuple[dict | None, object]:
-    """(env, preexec_fn) that pin a child to the first ``cpus`` cores and size thread pools to match."""
-    if not cpus:
-        return None, None
-    if not hasattr(os, "sched_setaffinity"):
-        raise OSError("--cpus needs Linux (os.sched_setaffinity); run inside Linux or WSL")
-    cores = sorted(os.sched_getaffinity(0))
-    if cpus > len(cores):
-        raise ValueError(f"asked for {cpus} CPUs, this process may use {len(cores)}")
-    chosen = set(cores[:cpus])
-    env = dict(os.environ, **{v: str(cpus) for v in THREAD_VARS})
-    return env, lambda: os.sched_setaffinity(0, chosen)
+class CpuLimit:
+    """Run children on ``cpus`` cores with thread pools sized to match.
+
+    * Linux: the child pins itself to the first ``cpus`` allowed cores before exec (``sched_setaffinity``).
+    * Windows: affinity masks are inherited, so this process narrows its own mask while it starts the
+      child, then restores it. The child never runs unpinned. (Processes limited to one processor
+      group, i.e. up to 64 logical CPUs.)
+    * macOS: there is no affinity API; only the thread-pool variables apply, with a warning.
+    """
+
+    def __init__(self, cpus: int | None):
+        self.cpus = cpus
+        self.env = dict(os.environ, **{v: str(cpus) for v in THREAD_VARS}) if cpus else None
+        self.preexec = None
+        self._win_mask = None
+        if not cpus:
+            return
+        if hasattr(os, "sched_setaffinity"):
+            cores = sorted(os.sched_getaffinity(0))
+            self._check(len(cores))
+            chosen = set(cores[:cpus])
+            self.preexec = lambda: os.sched_setaffinity(0, chosen)
+        elif sys.platform == "win32":
+            current = _win_affinity()
+            bits = [b for b in range(64) if current >> b & 1]
+            self._check(len(bits))
+            self._win_mask = sum(1 << b for b in bits[:cpus])
+        else:
+            import warnings
+            warnings.warn("no CPU affinity on this platform: only thread-pool variables are capped", stacklevel=2)
+
+    def _check(self, available: int) -> None:
+        if self.cpus > available:
+            raise ValueError(f"asked for {self.cpus} CPUs, this process may use {available}")
+
+    @contextmanager
+    def spawning(self):
+        if self._win_mask is None:
+            yield
+            return
+        previous = _win_affinity()
+        _win_set_affinity(self._win_mask)
+        try:
+            yield
+        finally:
+            _win_set_affinity(previous)
 
 
-def run_once(argv: list[str], cwd: str | None, env: dict | None, timeout: float | None, preexec=None) -> dict:
+def _win_affinity() -> int:
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    proc_mask, sys_mask = ctypes.c_size_t(), ctypes.c_size_t()
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    if not k32.GetProcessAffinityMask(wintypes.HANDLE(k32.GetCurrentProcess()), ctypes.byref(proc_mask),
+                                      ctypes.byref(sys_mask)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return proc_mask.value
+
+
+def _win_set_affinity(mask: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    if not k32.SetProcessAffinityMask(wintypes.HANDLE(k32.GetCurrentProcess()), ctypes.c_size_t(mask)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def run_once(argv: list[str], cwd: str | None, timeout: float | None, limit: CpuLimit | None = None) -> dict:
+    limit = limit or CpuLimit(None)
     started = time.perf_counter()
-    proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout,
-                          preexec_fn=preexec)
+    with limit.spawning():
+        proc = subprocess.Popen(argv, cwd=cwd, env=limit.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, preexec_fn=limit.preexec)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
     wall = time.perf_counter() - started
     if proc.returncode != 0:
-        raise RuntimeError(f"command failed ({proc.returncode}): {shlex.join(argv)}\n{proc.stderr[-2000:]}")
-    metrics = parse_metrics(proc.stdout)
+        raise RuntimeError(f"command failed ({proc.returncode}): {shlex.join(argv)}\n{stderr[-2000:]}")
+    metrics = parse_metrics(stdout)
     metrics.setdefault("wall_s", wall)
     return metrics
 
@@ -94,14 +158,14 @@ def run(base: list[str], cand: list[str], pairs: int = 2, aa_pairs: int = 1, war
         cwd: str | None = None, timeout: float | None = None, progress=print, cpus: int | None = None) -> dict:
     """Run the schedule and return a receipt (JSON-serialisable). ``cpus`` pins every run to that many cores."""
     commands = {"A": base, "A2": base, "B": cand}
-    env, preexec = cpu_limit(cpus)
+    limit = CpuLimit(cpus)
     for _ in range(warmup):
         for label in ("A", "B"):
-            run_once(commands[label], cwd, env, timeout, preexec)
+            run_once(commands[label], cwd, timeout, limit)
     runs = []
     order = schedule(pairs, aa_pairs)
     for i, label in enumerate(order, 1):
-        metrics = run_once(commands[label], cwd, env, timeout, preexec)
+        metrics = run_once(commands[label], cwd, timeout, limit)
         runs.append({"arm": label, "metrics": metrics})
         progress(f"[{i}/{len(order)}] {label} wall_s={metrics['wall_s']:.3f}")
     return {"tool": "speedloop.bench", "env": environment(), "cpus": cpus, "base": base, "candidate": cand,
