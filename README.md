@@ -2,7 +2,7 @@
 
 Make code faster and be able to prove it: every claimed gain is bigger than run-to-run noise, the output didn't change, and memory didn't quietly grow.
 
-Most "it's 12% faster now" claims come from timing the old version a few times, then the new one a few times, and comparing averages. On a real machine, the same code easily varies by more than that between runs, and a background build or a test suite running beside the benchmark can move the numbers further. Speed Loop turns the careful way into a handful of commands, plus a [Claude Code skill](skills/speed-loop/SKILL.md) that runs whole optimisation rounds with them.
+Most "it's 12% faster now" claims come from timing the old version a few times, then the new one a few times, and comparing averages. On a real machine, the same code easily varies by more than that between runs, and a background build or a test suite running beside the benchmark can move the numbers further. Speed Loop turns the careful way into a handful of commands, plus an [agent skill](skills/speed-loop/SKILL.md) that runs whole optimisation rounds with them.
 
 | Command | What it does |
 | --- | --- |
@@ -181,7 +181,13 @@ The [speed-loop skill](skills/speed-loop/SKILL.md) describes the whole round:
 4. batch the expensive measurement;
 5. report only what clears the noise.
 
-Copy `skills/speed-loop` into `.claude/skills/` (project) or `~/.claude/skills/` (personal) to use it with Claude Code.
+### Using the skill with a coding agent
+
+`skills/speed-loop` follows the open [Agent Skills](https://agentskills.io) format:
+- a `SKILL.md` with the round process, which agents load when a task matches;
+- `references/COMMANDS.md` with every command, read only when needed.
+
+Any agent that supports the format can use it, and so can one that just reads the file. Install it by copying the folder into your agent's skills directory, for example `.claude/skills/` for Claude Code. For other agents, see their documentation for where skills live. The skill only needs a shell and Python, so it doesn't depend on any agent's tools.
 
 ## Where this comes from
 
