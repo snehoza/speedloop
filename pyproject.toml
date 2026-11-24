@@ -25,6 +25,11 @@ dependencies = []
 [project.optional-dependencies]
 numeric = ["numpy", "pillow"]
 
+[project.urls]
+Homepage = "https://github.com/snehoza/speed-loop"
+Issues = "https://github.com/snehoza/speed-loop/issues"
+Changelog = "https://github.com/snehoza/speed-loop/blob/main/CHANGELOG.md"
+
 [project.scripts]
 speedloop = "speedloop.cli:main"
 
