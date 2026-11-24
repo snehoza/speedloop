@@ -4,7 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import os
+import threading
+
 from speedloop import bench, exact, ledger, noise, registry
+from speedloop.trace import Tracer
 
 
 class NoiseTests(unittest.TestCase):
@@ -130,6 +134,63 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(registry.keep_rule(2.0, 100)[0], "keep")
         self.assertEqual(registry.keep_rule(0.7, 100)[0], "ask")
         self.assertEqual(registry.keep_rule(0.1, 100)[0], "drop")
+
+
+class TraceTests(unittest.TestCase):
+    def test_tracer_feeds_the_ledger(self):
+        clock = iter([0.0, 0.1, 0.2, 0.3, 0.5, 0.6, 0.9, 1.2]).__next__
+        tracer = Tracer(clock=clock)
+        with tracer.action("load"):              # 0.0 .. 1.2
+            with tracer.span("fetch"):           # 0.1 .. 0.5
+                with tracer.span("parse"):       # 0.2 .. 0.3
+                    pass
+            with tracer.span("render"):          # 0.6 .. 0.9
+                pass
+        with tempfile.TemporaryDirectory() as d:
+            loaded = ledger.load([tracer.save(Path(d, "t.json"))])
+        wall, rows = loaded["load"][0]
+        self.assertAlmostEqual(wall, 1200.0)
+        self.assertAlmostEqual(rows[("fetch",)][0], 400.0)
+        self.assertAlmostEqual(rows[("fetch", "parse")][0], 100.0)
+        self.assertAlmostEqual(rows[("render",)][0], 300.0)
+        self.assertAlmostEqual(rows[("(unspanned)",)][0], 500.0)
+
+    def test_threads_and_decorator(self):
+        tracer = Tracer()
+
+        def background():
+            with tracer.span("bg"):
+                pass
+
+        @tracer.timed()
+        def work():
+            return 3
+
+        with tracer.action("a"):
+            th = threading.Thread(target=background, name="worker")
+            th.start()
+            th.join()
+            self.assertEqual(work(), 3)
+        threads = {s["name"]: s["thread"] for s in tracer.runs()[0]["spans"]}
+        self.assertEqual(threads["bg"], "worker")
+        self.assertIn("TraceTests.test_threads_and_decorator.<locals>.work", threads)
+
+
+class CpuLimitTests(unittest.TestCase):
+    def test_no_limit(self):
+        self.assertEqual(bench.cpu_limit(None), (None, None))
+
+    @unittest.skipUnless(hasattr(os, "sched_setaffinity"), "Linux only")
+    def test_pinned_child_sees_n_cores(self):
+        receipt = bench.run([sys.executable, "-c", "import os;print(f'SPEEDLOOP_METRIC cores={len(os.sched_getaffinity(0))}')"],
+                            [sys.executable, "-c", "print('SPEEDLOOP_METRIC cores=1')"], pairs=1, aa_pairs=0, warmup=0,
+                            progress=lambda *_: None, cpus=1)
+        self.assertEqual(bench.arms(receipt)["A"]["cores"], [1.0, 1.0])
+
+    @unittest.skipIf(hasattr(os, "sched_setaffinity"), "only where pinning is unavailable")
+    def test_clear_error_without_affinity(self):
+        with self.assertRaises(OSError):
+            bench.cpu_limit(2)
 
 
 if __name__ == "__main__":

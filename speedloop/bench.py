@@ -49,9 +49,28 @@ def parse_metrics(stdout: str) -> dict[str, float]:
     return out
 
 
-def run_once(argv: list[str], cwd: str | None, env: dict | None, timeout: float | None) -> dict:
+THREAD_VARS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS",
+               "NUMBA_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
+
+
+def cpu_limit(cpus: int | None) -> tuple[dict | None, object]:
+    """(env, preexec_fn) that pin a child to the first ``cpus`` cores and size thread pools to match."""
+    if not cpus:
+        return None, None
+    if not hasattr(os, "sched_setaffinity"):
+        raise OSError("--cpus needs Linux (os.sched_setaffinity); run inside Linux or WSL")
+    cores = sorted(os.sched_getaffinity(0))
+    if cpus > len(cores):
+        raise ValueError(f"asked for {cpus} CPUs, this process may use {len(cores)}")
+    chosen = set(cores[:cpus])
+    env = dict(os.environ, **{v: str(cpus) for v in THREAD_VARS})
+    return env, lambda: os.sched_setaffinity(0, chosen)
+
+
+def run_once(argv: list[str], cwd: str | None, env: dict | None, timeout: float | None, preexec=None) -> dict:
     started = time.perf_counter()
-    proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout,
+                          preexec_fn=preexec)
     wall = time.perf_counter() - started
     if proc.returncode != 0:
         raise RuntimeError(f"command failed ({proc.returncode}): {shlex.join(argv)}\n{proc.stderr[-2000:]}")
@@ -72,19 +91,20 @@ def environment() -> dict:
 
 
 def run(base: list[str], cand: list[str], pairs: int = 2, aa_pairs: int = 1, warmup: int = 1,
-        cwd: str | None = None, timeout: float | None = None, progress=print) -> dict:
-    """Run the schedule and return a receipt (JSON-serialisable)."""
+        cwd: str | None = None, timeout: float | None = None, progress=print, cpus: int | None = None) -> dict:
+    """Run the schedule and return a receipt (JSON-serialisable). ``cpus`` pins every run to that many cores."""
     commands = {"A": base, "A2": base, "B": cand}
+    env, preexec = cpu_limit(cpus)
     for _ in range(warmup):
         for label in ("A", "B"):
-            run_once(commands[label], cwd, None, timeout)
+            run_once(commands[label], cwd, env, timeout, preexec)
     runs = []
     order = schedule(pairs, aa_pairs)
     for i, label in enumerate(order, 1):
-        metrics = run_once(commands[label], cwd, None, timeout)
+        metrics = run_once(commands[label], cwd, env, timeout, preexec)
         runs.append({"arm": label, "metrics": metrics})
         progress(f"[{i}/{len(order)}] {label} wall_s={metrics['wall_s']:.3f}")
-    return {"tool": "speedloop.bench", "env": environment(), "base": base, "candidate": cand,
+    return {"tool": "speedloop.bench", "env": environment(), "cpus": cpus, "base": base, "candidate": cand,
             "pairs": pairs, "aa_pairs": aa_pairs, "warmup": warmup, "runs": runs}
 
 

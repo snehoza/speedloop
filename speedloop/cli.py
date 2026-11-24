@@ -1,6 +1,6 @@
 """speedloop command line.
 
-  speedloop bench --base "python old.py" --cand "python new.py" [--pairs 2 --aa-pairs 1] --out receipt.json
+  speedloop bench --base "python old.py" --cand "python new.py" [--pairs 2 --aa-pairs 1] [--cpus 4,16] --out receipt.json
   speedloop report receipt.json
   speedloop ledger --cand c1.json c2.json [--base b1.json b2.json] [--aa a1.json a2.json] [--out ledger.md]
   speedloop golden build OUTPUTS GOLDEN
@@ -35,7 +35,9 @@ def main(argv=None) -> int:
     b.add_argument("--warmup", type=int, default=1)
     b.add_argument("--timeout", type=float, default=None)
     b.add_argument("--higher-is-better", nargs="*", default=[], help="metrics where bigger is better")
-    b.add_argument("--out", type=Path)
+    b.add_argument("--cpus", default="", help="comma list of CPU counts, e.g. 4,16: the whole schedule runs "
+                   "once per count, pinned to that many cores (Linux)")
+    b.add_argument("--out", type=Path, help="receipt path; with several --cpus, one file per count (name-<n>cpu.json)")
 
     r = sub.add_parser("report", help="re-print the verdict table of a bench receipt")
     r.add_argument("receipt", type=Path)
@@ -65,12 +67,17 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     if args.cmd == "bench":
-        receipt = bench.run(_split(args.base), _split(args.cand), args.pairs, args.aa_pairs, args.warmup,
-                            timeout=args.timeout)
-        if args.out:
-            bench.save(receipt, args.out)
-        table, _ = bench.report(receipt, frozenset(args.higher_is_better))
-        print(table)
+        counts = [int(c) for c in args.cpus.split(",") if c.strip()] or [None]
+        for cpus in counts:
+            receipt = bench.run(_split(args.base), _split(args.cand), args.pairs, args.aa_pairs, args.warmup,
+                                timeout=args.timeout, cpus=cpus)
+            if args.out:
+                out = args.out if len(counts) == 1 else args.out.with_name(f"{args.out.stem}-{cpus}cpu{args.out.suffix}")
+                bench.save(receipt, out)
+            table, _ = bench.report(receipt, frozenset(args.higher_is_better))
+            print(f"
+## {cpus} CPUs
+" if cpus else "", table, sep="")
         return 0
     if args.cmd == "report":
         table, _ = bench.report(json.loads(args.receipt.read_text(encoding="utf-8")), frozenset(args.higher_is_better))

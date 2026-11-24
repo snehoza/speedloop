@@ -56,9 +56,31 @@ SPEEDLOOP_METRIC peak_mib=812
 
 Use `--higher-is-better` for metrics such as throughput.
 
+## Measuring at several CPU counts
+
+A change that wins on 4 cores can lose on 16. `--cpus 4,16` runs the whole schedule once per count, pins each run to that many cores, and sets the usual thread-pool variables (`OMP_NUM_THREADS`, `NUMBA_NUM_THREADS`, ...) to match. Pinning needs Linux (or WSL).
+
+```bash
+speedloop bench --base "python old.py" --cand "python new.py" --cpus 4,16 --out results/receipt.json
+```
+
 ## Span ledger
 
-Write traces as JSON (one or more runs per file):
+Instrument your code with the tracer:
+
+```python
+from speedloop.trace import Tracer
+
+tracer = Tracer()
+with tracer.action("load_page"):
+    with tracer.span("fetch"):
+        ...
+    with tracer.span("parse"):
+        ...
+tracer.save("results-round1/trace.json")
+```
+
+`@tracer.timed()` wraps a function in a span, and spans record their thread. Or write traces as JSON yourself (one or more runs per file):
 
 ```json
 {"runs": [{"action": "load_page", "start": 0.0, "end": 1.84,
