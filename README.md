@@ -7,14 +7,14 @@ Most "it's 12% faster now" claims come from timing the old version a few times, 
 | Command | What it does |
 | --- | --- |
 | `bench` | Runs old and new interleaved (A-B-B-A) plus old against itself (A/A) for the noise floor. Records time, **peak memory** and your own metrics, and gives each a verdict: `faster`, `SLOWER` or `noise`. Can pin to N cores (`--cpus 4,16`) and run copies side by side (`--parallel`). |
-| `golden` | Snapshots outputs once and checks every change against them: byte-identical, or how many values moved and by how much, with a budget verdict (`adopt` / `ask` / `reject`) and full-size before/after/diff sheets for images. |
+| `golden` | Snapshots outputs once and checks every change against them, for any output: arrays, images, JSON, CSV, text. Byte-identical, or how many values moved and by how much, with a tolerance verdict (`adopt` / `ask` / `reject`) and review files (diffs, full-size image sheets). |
 | `ledger` | Turns span traces into a time tree per user action, with a noise-aware delta for every step. `speedloop.trace.Tracer` records the traces. |
 | `micro` (Python API) | Microbenchmark of two functions on the same input: exactness first, then A/A + ABBA timing. |
 | `registry`, `keep` | Every cache in the code must be documented, and must save at least 1 s per 100 MiB it holds. |
 | `locked`, quiet check | One timing job at a time. `bench` waits for an idle machine, and anything else heavy can run under the same lock. |
 | `compare`, `profile`, `init` | Screen against an earlier receipt, cProfile a program, and start a project's queue / round-report / cache-registry files. |
 
-Standard library only, Python 3.11+, Linux / Windows / macOS. numpy (and Pillow, for images) are optional and turn on numeric output comparison.
+Standard library only, Python 3.11+, Linux / Windows / macOS. numpy (and Pillow, for images) are optional; JSON, CSV and text outputs need neither.
 
 ## Quick start
 
@@ -77,21 +77,33 @@ speedloop bench --base CMD --cand CMD [--pairs 2] [--aa-pairs 1] [--warmup 1]
 ## golden
 
 ```bash
-speedloop golden build OUTPUTS GOLDEN                # never overwrites; a new golden gets a new folder
-speedloop golden check OUTPUTS GOLDEN [--strict]     # exit 0 for identical / adopt
-speedloop golden sheet OUTPUTS GOLDEN --out SHEETS   # before | after | diff, full resolution
+speedloop golden build OUTPUTS GOLDEN                 # never overwrites; a new golden gets a new folder
+speedloop golden check OUTPUTS GOLDEN [--strict]      # exit 0 for identical / adopt
+speedloop golden review OUTPUTS GOLDEN --out REVIEW   # diffs and image sheets for every changed file
 ```
 
-`.npy`, `.npz` and images are compared numerically (with numpy, plus Pillow for images). For each changed file you get the count of changed values, the largest difference and the 99.9th percentile, and a verdict:
+Point it at whatever your program produces. Files whose bytes match are `identical`. Changed files are compared by content, so formatting noise is told apart from real changes:
 
-| verdict | largest difference | meaning |
+| kind | files | how they are compared |
 | --- | --- | --- |
-| `identical` | 0 | same values |
-| `adopt` | ≤ 1 (`--adopt-max`) | rounding level: count it and report it |
-| `ask` | ≤ 3 (`--ask-max`) | a person looks at the sheets and decides |
-| `reject` | more, or a shape change | not a speed change any more |
+| array | `.npy`, `.npz`, images | every value (needs numpy; images also Pillow) |
+| json | `.json` | structure and keys must match; numbers compared as values, other values must be equal |
+| table | `.csv`, `.tsv` | shape must match; numeric cells compared as values, text cells must be equal |
+| text | any other UTF-8 file | changed lines counted |
+| binary | anything else | "differs" only |
 
-Look at sheets at full size; small changes are invisible in thumbnails, in both directions.
+Each changed file gets a verdict against your output tolerance:
+
+| verdict | when | meaning |
+| --- | --- | --- |
+| `identical` | every value equal | e.g. only number formatting or key order changed |
+| `adopt` | largest difference ≤ `--adopt-max` (default 1) | rounding level: count it and report it |
+| `ask` | ≤ `--ask-max` (default 3), or a text/binary change | a person reviews it and decides |
+| `reject` | larger, or the structure / a label changed | not a speed change any more |
+
+Tolerances are in your output's own units: levels of an 8-bit image, milliseconds in a JSON report, cents in a CSV. With `--relative` they are fractions of the golden value (`--adopt-max 1e-6 --relative` for floating-point results). The defaults suit integer-valued outputs; set your own per project.
+
+`golden review` writes what a person needs to decide: a unified diff for text, JSON and CSV, and a full-resolution golden | new | difference sheet for images. Look at image sheets at full size; small changes are invisible in thumbnails, in both directions.
 
 ## Span ledger and tracer
 
@@ -170,7 +182,7 @@ Copy `skills/speed-loop` into `.claude/skills/` (project) or `~/.claude/skills/`
 
 ## Where this comes from
 
-These tools and rules come out of a long optimisation effort on an image-processing pipeline. Many rounds made the pipeline several times faster with byte-identical output, and a few changes that looked like wins turned out to be noise.
+These tools and rules come out of a long optimisation effort on a multi-stage processing pipeline. Many rounds made it several times faster with byte-identical output, and a few changes that looked like wins turned out to be noise.
 
 ## License
 

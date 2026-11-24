@@ -116,8 +116,8 @@ class ExactTests(unittest.TestCase):
             np.save(a, x)
             x[0, 0] = 1
             np.save(b, x)
-            stats = exact.numeric_diff(a, b)["array"]
-        self.assertEqual((stats["changed"], stats["max_abs"]), (1, 1.0))
+            stats = exact.compare_files(a, b)
+        self.assertEqual((stats["kind"], stats["changed"], stats["max_abs"]), ("array", 1, 1.0))
 
 
 class RegistryTests(unittest.TestCase):

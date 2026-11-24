@@ -1,4 +1,4 @@
-"""Tests for memory, parallel runs, the lock, the quiet check, budgets/sheets, micro, compare, init, profile."""
+"""Tests for memory, parallel runs, the lock, the quiet check, output tolerance and review, micro, compare, init, profile."""
 import io
 import json
 import subprocess
@@ -69,17 +69,63 @@ class MachineTests(unittest.TestCase):
         self.assertIsNotNone(machine.wait_until_quiet(101, 1, 0.1))
 
 
-class BudgetTests(unittest.TestCase):
-    def test_budget_levels(self):
-        st = lambda m: {"array": {"changed": 1, "of": 10, "max_abs": m, "p99_9_abs": 0}}  # noqa: E731
-        self.assertEqual(exact.budget(st(0)), "identical")
-        self.assertEqual(exact.budget(st(1)), "adopt")
-        self.assertEqual(exact.budget(st(3)), "ask")
-        self.assertEqual(exact.budget(st(9)), "reject")
-        self.assertEqual(exact.budget({"array": {"shape_mismatch": True}}), "reject")
-        self.assertEqual(exact.budget(None), "ask")
+class ToleranceTests(unittest.TestCase):
+    def _pair(self, d, name, golden_text, new_text):
+        a, b = Path(d, "g_" + name), Path(d, "n_" + name)
+        a.write_text(golden_text, encoding="utf-8")
+        b.write_text(new_text, encoding="utf-8")
+        return a, b
 
-    def test_image_check_and_sheet(self):
+    def test_levels(self):
+        r = lambda m: {"kind": "json", "changed": 1, "max_abs": m, "max_rel": m / 10,  # noqa: E731
+                       "non_numeric_changed": 0, "structure_changed": False}
+        self.assertEqual(exact.tolerance(r(0.5)), "adopt")
+        self.assertEqual(exact.tolerance(r(3)), "ask")
+        self.assertEqual(exact.tolerance(r(9)), "reject")
+        self.assertEqual(exact.tolerance(r(9), adopt_max=1, relative=True), "adopt")   # 9/10 relative
+
+    def test_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            same = exact.compare_files(*self._pair(d, "a.json", '{"x": 1.0, "y": [1, 2]}', '{"y":[1,2],"x":1}'))
+            self.assertEqual(exact.tolerance(same), "identical")          # formatting and key order only
+            small = exact.compare_files(*self._pair(d, "b.json", '{"t": 100.0}', '{"t": 100.4}'))
+            self.assertEqual((small["changed"], exact.tolerance(small)), (1, "adopt"))
+            label = exact.compare_files(*self._pair(d, "c.json", '{"k": "cat"}', '{"k": "dog"}'))
+            self.assertEqual(exact.tolerance(label), "reject")            # a changed label is a real change
+            keys = exact.compare_files(*self._pair(d, "e.json", '{"a": 1}', '{"a": 1, "b": 2}'))
+            self.assertEqual(exact.tolerance(keys), "reject")
+
+    def test_table_text_binary(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = exact.compare_files(*self._pair(d, "a.csv", "id,price\n1,10.00\n2,5.5\n", "id,price\n1,10\n2,5.6\n"))
+            self.assertEqual((t["kind"], t["changed"], exact.tolerance(t)), ("table", 1, "adopt"))
+            # relative: 0.1 / 5.5 = 1.8 %, above a 1 % adopt limit and below a 3 % ask limit
+            self.assertEqual(exact.tolerance(t, adopt_max=0.01, ask_max=0.03, relative=True), "ask")
+            rows = exact.compare_files(*self._pair(d, "b.csv", "a\n1\n", "a\n1\n2\n"))
+            self.assertEqual(exact.tolerance(rows), "reject")
+            txt = exact.compare_files(*self._pair(d, "c.log", "one\ntwo\nthree\n", "one\n2\nthree\n"))
+            self.assertEqual((txt["kind"], txt["lines_changed"], exact.tolerance(txt)), ("text", 1, "ask"))
+            ga, gb = Path(d, "x.bin"), Path(d, "y.bin")
+            ga.write_bytes(bytes([0xFF, 0xFE, 0x00, 0x81]))
+            gb.write_bytes(bytes([0xFF, 0xFE, 0x00, 0x82]))
+            self.assertEqual(exact.compare_files(ga, gb)["kind"], "binary")
+
+    def test_review_files_for_text(self):
+        with tempfile.TemporaryDirectory() as d:
+            out, gold = Path(d, "out"), Path(d, "gold")
+            out.mkdir()
+            (out / "report.json").write_text('{"total": 10}', encoding="utf-8")
+            exact.build(out, gold)
+            (out / "report.json").write_text('{"total": 10.5}', encoding="utf-8")
+            res = exact.check(out, gold)
+            self.assertEqual(res["verdict"], "adopt")
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["golden", "check", str(out), str(gold)]), 0)
+                self.assertEqual(cli.main(["golden", "check", str(out), str(gold), "--strict"]), 1)
+                cli.main(["golden", "review", str(out), str(gold), "--out", str(Path(d, "rev"))])
+            self.assertIn("10.5", Path(d, "rev", "report.json.review.diff").read_text(encoding="utf-8"))
+
+    def test_image_check_and_review(self):
         try:
             import numpy as np
             from PIL import Image
@@ -91,18 +137,15 @@ class BudgetTests(unittest.TestCase):
             img = np.full((20, 30, 3), 100, np.uint8)
             Image.fromarray(img).save(out / "a.png")
             exact.build(out, gold)
-            img[5, 5] = 101                                  # one pixel, one level
+            img[5, 5] = 101
             Image.fromarray(img).save(out / "a.png")
             self.assertEqual(exact.check(out, gold)["verdict"], "adopt")
             img[6, 6] = 110
             Image.fromarray(img).save(out / "a.png")
             self.assertEqual(exact.check(out, gold)["verdict"], "reject")
-            sheet = exact.sheet(gold / "a.png", out / "a.png", Path(d, "s.png"))
+            sheet = exact.review(gold / "a.png", out / "a.png", Path(d, "rev"))
             with Image.open(sheet) as s:
                 self.assertEqual(s.size, (30 * 3 + 16, 20))   # full size, three panels
-            with redirect_stdout(io.StringIO()):
-                self.assertEqual(cli.main(["golden", "check", str(out), str(gold)]), 1)
-                self.assertEqual(cli.main(["golden", "sheet", str(out), str(gold), "--out", str(Path(d, "sheets"))]), 0)
 
 
 class MicroTests(unittest.TestCase):

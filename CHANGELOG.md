@@ -8,7 +8,11 @@
   - heavy-job lock held for the whole schedule;
   - waits for a quiet machine before each run, recorded in the receipt;
   - `--cpus` pinning on Windows as well as Linux (macOS: thread caps only).
-- `golden`: budget verdict per file (`identical` / `adopt` / `ask` / `reject`), `sheet` for full-resolution before/after/diff images, `--strict`.
+- `golden`:
+  - content comparison for any output (arrays, images, JSON, CSV/TSV, text, binary);
+  - a tolerance verdict per file (`identical` / `adopt` / `ask` / `reject`), absolute or `--relative`;
+  - `review` writes diffs and full-resolution image sheets;
+  - `--strict`.
 - New:
   - `micro` (in-process microbenchmark with an exactness check);
   - `compare` (screen against an earlier receipt);

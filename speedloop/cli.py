@@ -5,7 +5,7 @@
   speedloop report R.json                       re-print a receipt's verdict table
   speedloop compare BASE.json CAND.json         screen a candidate against an earlier receipt
   speedloop ledger --cand T.json ... [--base ...] [--aa ...]
-  speedloop golden build OUTPUTS GOLDEN | check OUTPUTS GOLDEN | sheet OUTPUTS GOLDEN --out DIR
+  speedloop golden build OUTPUTS GOLDEN | check OUTPUTS GOLDEN | review OUTPUTS GOLDEN --out DIR
   speedloop registry check [--root .]
   speedloop keep SECONDS_SAVED MIB_HELD
   speedloop profile [-m module | script.py] [args ...]
@@ -83,15 +83,18 @@ def _parser() -> argparse.ArgumentParser:
     lg.add_argument("--min-ms", type=float, default=5.0)
     lg.add_argument("--out", type=Path)
 
-    g = sub.add_parser("golden", help="golden outputs: build once, check after every change, sheet the differences")
-    g.add_argument("action", choices=["build", "check", "sheet"])
+    g = sub.add_parser("golden", help="golden outputs: build once, check after every change, review the differences")
+    g.add_argument("action", choices=["build", "check", "review"])
     g.add_argument("outputs", type=Path)
     g.add_argument("golden", type=Path)
-    g.add_argument("--adopt-max", type=float, default=exact.ADOPT_MAX)
-    g.add_argument("--ask-max", type=float, default=exact.ASK_MAX)
+    g.add_argument("--adopt-max", type=float, default=exact.ADOPT_MAX,
+                   help="largest difference accepted without review (output units, or a fraction with --relative)")
+    g.add_argument("--ask-max", type=float, default=exact.ASK_MAX,
+                   help="largest difference a person may still approve; above it the change is rejected")
+    g.add_argument("--relative", action="store_true", help="tolerances are relative to the golden value")
     g.add_argument("--strict", action="store_true", help="check: only byte-identical passes")
-    g.add_argument("--out", type=Path, help="sheet: folder for the before|after|diff images")
-    g.add_argument("--amplify", type=float, default=None, help="sheet: multiply differences by N instead of auto-scaling")
+    g.add_argument("--out", type=Path, help="review: folder for the files to look at (image sheets, text diffs)")
+    g.add_argument("--amplify", type=float, default=None, help="review: image differences x N instead of auto-scaled")
 
     rg = sub.add_parser("registry", help="every cache in code is documented, and vice versa")
     rg.add_argument("action", choices=["check"])
@@ -117,18 +120,20 @@ def _golden(args) -> int:
         m = exact.build(args.outputs, args.golden)
         print(f"golden built: {len(m['files'])} files in {args.golden}")
         return 0
-    result = exact.check(args.outputs, args.golden, args.adopt_max, args.ask_max)
-    if args.action == "sheet":
+    result = exact.check(args.outputs, args.golden, args.adopt_max, args.ask_max, args.relative)
+    if args.action == "review":
         if not args.out:
-            print("sheet needs --out DIR")
+            print("review needs --out DIR")
             return 2
         made = 0
         for rel, res in result["files"].items():
-            if res["status"] == "differs" and Path(rel).suffix.lower() in exact.IMAGE_SUFFIXES:
-                name = Path(rel).as_posix().replace("/", "__") + ".sheet.png"
-                print(f"wrote {exact.sheet(args.golden / rel, args.outputs / rel, args.out / name, args.amplify)}")
-                made += 1
-        print(f"{made} sheet(s); left = golden, middle = new, right = |difference|")
+            if res["status"] == "differs":
+                sub = args.out / Path(rel).parent
+                path = exact.review(args.golden / rel, args.outputs / rel, sub, args.amplify)
+                if path:
+                    print(f"[{res['verdict']}] {path}")
+                    made += 1
+        print(f"{made} review file(s). Image sheets: golden | new | difference, at full resolution.")
         return 0
     for rel, res in result["files"].items():
         if res["status"] != "identical":

@@ -17,8 +17,9 @@ Per-step breakdown: `<ledger.md>` (`speedloop ledger`).
 
 ## Exactness
 
-`speedloop golden check`: <IDENTICAL on all N goldens | adopt: X values changed, max |diff| 1, p99.9 0 |
-ask: sheets in results-.../sheets, approved by <name> on <date>>
+`speedloop golden check` (tolerance: adopt <= <x>, ask <= <y>, <absolute|relative>):
+<IDENTICAL on all N goldens | adopt: X values changed in Y files, max |diff| <d> |
+ask: review files in results-.../review, approved by <name> on <date>>
 
 ## Memory
 

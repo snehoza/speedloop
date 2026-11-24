@@ -27,12 +27,13 @@ A round makes the code faster without changing what it produces. Every claimed g
 
 1. Change one thing.
 2. **Prove it's exact first, then time it.**
-   - `speedloop golden check OUTPUTS goldens/<name>`:
+   - Set the output tolerance once per project, in the output's units (`--adopt-max`, `--ask-max`), or relative (`--relative`) for floating-point results.
+   - `speedloop golden check OUTPUTS goldens/<name>` works on arrays, images, JSON, CSV and text:
      - `identical`: fine.
-     - `adopt` (largest difference ≤ 1, rounding level): count it and report it.
-     - `ask` (≤ 3): build sheets (`speedloop golden sheet ... --out sheets/`), look at them at full size, and get the owner's OK before keeping it.
+     - `adopt` (within the adopt tolerance, rounding level): count it and report it.
+     - `ask`: run `speedloop golden review ... --out review/`, look at the diffs or full-size image sheets, and get the owner's OK before keeping it.
      - `reject`: drop it, whatever the speed.
-   - Changes to decisions (masks, labels, branches taken) count as visible, however small the numbers.
+   - Changes to decisions (labels, categories, which branch was taken, the shape of the output) count as real changes, however small the numbers.
 3. **Test by risk.**
    - **Kernel or pure-function change:** `speedloop.micro.compare(old, new, make_input=...)` is the proof and the estimate. No end-to-end run needed.
    - **Exact refactor or exact cache:** golden check plus one quick `bench --pairs 1 --aa-pairs 0` screen, or `speedloop compare` against the last round's receipt.
