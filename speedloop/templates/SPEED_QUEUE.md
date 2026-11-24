@@ -3,7 +3,7 @@
 The one list of speed work: every idea goes here first, and every round pulls from the top. Nothing is
 tried twice unchanged. Before proposing an idea, search this file (and the rejected section) for it.
 
-Rules (see `skills/speed-loop/SKILL.md`): output stays identical, or a counted rounding-level change a
+Rules (see `skills/speedloop/SKILL.md`): output stays identical, or a counted rounding-level change a
 person approved; a gain counts only past the A/A noise with the two sides fully separated; a cache is
 kept at >= 1 s saved per 100 MiB held.
 

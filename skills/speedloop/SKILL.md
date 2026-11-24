@@ -1,11 +1,11 @@
 ---
-name: speed-loop
+name: speedloop
 description: Make code faster the measured way - profile, change one thing, prove the output did not change, and keep only gains bigger than run-to-run noise, with peak memory as a target too. Use when asked to speed up code, run an optimisation round, benchmark a change, or check whether a change really is faster or uses less memory.
 license: MIT
-compatibility: Any agent that can run shell commands. Needs Python 3.11+ and the speedloop package (pip install speedloop, or PYTHONPATH pointing at the speed-loop repo); numpy and Pillow are optional, for comparing array and image outputs.
+compatibility: Any agent that can run shell commands. Needs Python 3.11+ and the speedloop package (pip install speedloop, or PYTHONPATH pointing at the speedloop repo); numpy and Pillow are optional, for comparing array and image outputs.
 metadata:
   version: "1.0.0"
-  repository: speed-loop
+  repository: speedloop
 ---
 
 # Speed loop
