@@ -1,34 +1,29 @@
 """Interleaved A/B timing with an A/A noise floor.
 
 Runs the base command (A) and the candidate (B) in ABBA order, so slow drift of the machine (thermal,
-background load, caches) hits both sides equally, plus A/A pairs (A against itself) to measure how much
-the same code varies run to run.
+background load, caches) hits both sides equally, plus A/A pairs (A against itself) to measure how much the
+same code varies run to run.
 
-Each run is a subprocess. Its wall time is always recorded as the metric ``wall_s``. A command can report
-its own metrics by printing lines such as::
+Each run is a subprocess (``speedloop.proc``). Every run records ``wall_s`` and ``peak_rss_mib``; a command
+can add its own metrics by printing lines such as::
 
     SPEEDLOOP_METRIC step_one=0.412
-    SPEEDLOOP_METRIC peak_mib=812
 
-Every metric is compared with the same noise rule (``speedloop.noise``).
+Every metric is judged with the same noise rule (``speedloop.noise``). The whole schedule holds the
+heavy-job lock, and each run waits for the machine to be quiet first (``speedloop.machine``).
 """
 from __future__ import annotations
 
 import json
 import os
 import platform
-import re
-import shlex
 import subprocess
 import sys
-import time
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import noise
-
-METRIC_LINE = re.compile(r"^SPEEDLOOP_METRIC\s+([A-Za-z0-9_.:/-]+)=([-+0-9.eE]+)\s*$")
+from . import machine, noise
+from .proc import CpuLimit, measure, parse_metrics  # noqa: F401  (parse_metrics re-exported)
 
 
 def schedule(pairs: int, aa_pairs: int) -> list[str]:
@@ -39,108 +34,6 @@ def schedule(pairs: int, aa_pairs: int) -> list[str]:
     for _ in range(pairs):
         order += ["A", "B", "B", "A"]
     return order
-
-
-def parse_metrics(stdout: str) -> dict[str, float]:
-    out = {}
-    for line in stdout.splitlines():
-        m = METRIC_LINE.match(line.strip())
-        if m:
-            out[m.group(1)] = float(m.group(2))
-    return out
-
-
-THREAD_VARS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS",
-               "NUMBA_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
-
-
-class CpuLimit:
-    """Run children on ``cpus`` cores with thread pools sized to match.
-
-    * Linux: the child pins itself to the first ``cpus`` allowed cores before exec (``sched_setaffinity``).
-    * Windows: affinity masks are inherited, so this process narrows its own mask while it starts the
-      child, then restores it. The child never runs unpinned. (Processes limited to one processor
-      group, i.e. up to 64 logical CPUs.)
-    * macOS: there is no affinity API; only the thread-pool variables apply, with a warning.
-    """
-
-    def __init__(self, cpus: int | None):
-        self.cpus = cpus
-        self.env = dict(os.environ, **{v: str(cpus) for v in THREAD_VARS}) if cpus else None
-        self.preexec = None
-        self._win_mask = None
-        if not cpus:
-            return
-        if hasattr(os, "sched_setaffinity"):
-            cores = sorted(os.sched_getaffinity(0))
-            self._check(len(cores))
-            chosen = set(cores[:cpus])
-            self.preexec = lambda: os.sched_setaffinity(0, chosen)
-        elif sys.platform == "win32":
-            current = _win_affinity()
-            bits = [b for b in range(64) if current >> b & 1]
-            self._check(len(bits))
-            self._win_mask = sum(1 << b for b in bits[:cpus])
-        else:
-            import warnings
-            warnings.warn("no CPU affinity on this platform: only thread-pool variables are capped", stacklevel=2)
-
-    def _check(self, available: int) -> None:
-        if self.cpus > available:
-            raise ValueError(f"asked for {self.cpus} CPUs, this process may use {available}")
-
-    @contextmanager
-    def spawning(self):
-        if self._win_mask is None:
-            yield
-            return
-        previous = _win_affinity()
-        _win_set_affinity(self._win_mask)
-        try:
-            yield
-        finally:
-            _win_set_affinity(previous)
-
-
-def _win_affinity() -> int:
-    import ctypes
-    from ctypes import wintypes
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    proc_mask, sys_mask = ctypes.c_size_t(), ctypes.c_size_t()
-    k32.GetCurrentProcess.restype = wintypes.HANDLE
-    if not k32.GetProcessAffinityMask(wintypes.HANDLE(k32.GetCurrentProcess()), ctypes.byref(proc_mask),
-                                      ctypes.byref(sys_mask)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    return proc_mask.value
-
-
-def _win_set_affinity(mask: int) -> None:
-    import ctypes
-    from ctypes import wintypes
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    k32.GetCurrentProcess.restype = wintypes.HANDLE
-    if not k32.SetProcessAffinityMask(wintypes.HANDLE(k32.GetCurrentProcess()), ctypes.c_size_t(mask)):
-        raise ctypes.WinError(ctypes.get_last_error())
-
-
-def run_once(argv: list[str], cwd: str | None, timeout: float | None, limit: CpuLimit | None = None) -> dict:
-    limit = limit or CpuLimit(None)
-    started = time.perf_counter()
-    with limit.spawning():
-        proc = subprocess.Popen(argv, cwd=cwd, env=limit.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, preexec_fn=limit.preexec)
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()
-        raise
-    wall = time.perf_counter() - started
-    if proc.returncode != 0:
-        raise RuntimeError(f"command failed ({proc.returncode}): {shlex.join(argv)}\n{stderr[-2000:]}")
-    metrics = parse_metrics(stdout)
-    metrics.setdefault("wall_s", wall)
-    return metrics
 
 
 def environment() -> dict:
@@ -155,21 +48,39 @@ def environment() -> dict:
 
 
 def run(base: list[str], cand: list[str], pairs: int = 2, aa_pairs: int = 1, warmup: int = 1,
-        cwd: str | None = None, timeout: float | None = None, progress=print, cpus: int | None = None) -> dict:
-    """Run the schedule and return a receipt (JSON-serialisable). ``cpus`` pins every run to that many cores."""
+        cwd: str | None = None, timeout: float | None = None, progress=print, cpus: int | None = None,
+        parallel: int = 1, lock: bool | Path = True, lock_timeout: float | None = None,
+        quiet_threshold: float | None = 25.0, quiet_wait: float = 60.0) -> dict:
+    """Run the schedule and return a receipt (JSON-serialisable).
+
+    ``cpus`` pins every run to that many cores; ``parallel`` runs that many copies of each command at once
+    (a load check). ``lock`` holds the heavy-job lock (True = default path, a Path = that file, False =
+    none). Before each run the machine must drop below ``quiet_threshold`` % CPU, waiting up to
+    ``quiet_wait`` seconds (None disables the check).
+    """
     commands = {"A": base, "A2": base, "B": cand}
     limit = CpuLimit(cpus)
-    for _ in range(warmup):
-        for label in ("A", "B"):
-            run_once(commands[label], cwd, timeout, limit)
-    runs = []
-    order = schedule(pairs, aa_pairs)
-    for i, label in enumerate(order, 1):
-        metrics = run_once(commands[label], cwd, timeout, limit)
-        runs.append({"arm": label, "metrics": metrics})
-        progress(f"[{i}/{len(order)}] {label} wall_s={metrics['wall_s']:.3f}")
-    return {"tool": "speedloop.bench", "env": environment(), "cpus": cpus, "base": base, "candidate": cand,
-            "pairs": pairs, "aa_pairs": aa_pairs, "warmup": warmup, "runs": runs}
+    held = machine.HeavyLock(lock if isinstance(lock, Path) else None, lock_timeout, progress=progress) if lock else None
+    if held:
+        held.acquire()
+    try:
+        for _ in range(warmup):
+            for label in ("A", "B"):
+                measure(commands[label], cwd, timeout, limit, parallel)
+        runs = []
+        order = schedule(pairs, aa_pairs)
+        for i, label in enumerate(order, 1):
+            busy = machine.wait_until_quiet(quiet_threshold, quiet_wait, progress=progress) \
+                if quiet_threshold is not None else None
+            metrics = measure(commands[label], cwd, timeout, limit, parallel)
+            runs.append({"arm": label, "busy_pct_before": busy, "metrics": metrics})
+            progress(f"[{i}/{len(order)}] {label} wall_s={metrics['wall_s']:.3f}")
+    finally:
+        if held:
+            held.release()
+    return {"tool": "speedloop.bench", "env": environment(), "cpus": cpus, "parallel": parallel,
+            "base": base, "candidate": cand, "pairs": pairs, "aa_pairs": aa_pairs, "warmup": warmup,
+            "quiet_threshold": quiet_threshold, "runs": runs}
 
 
 def arms(receipt: dict) -> dict[str, dict[str, list[float]]]:
@@ -181,10 +92,7 @@ def arms(receipt: dict) -> dict[str, dict[str, list[float]]]:
     return out
 
 
-def report(receipt: dict, higher_is_better: frozenset = frozenset()) -> tuple[str, list[noise.Verdict]]:
-    """Markdown table: metric | A/A spread | base | candidate | delta | verdict."""
-    a = arms(receipt)
-    base, cand, aa = a.get("A", {}), a.get("B", {}), a.get("A2", {})
+def _table(base: dict, cand: dict, aa: dict, higher_is_better) -> tuple[list[str], list[noise.Verdict]]:
     lines = ["| metric | A/A spread | base median | candidate median | delta | noise | verdict |",
              "| --- | ---: | ---: | ---: | ---: | ---: | --- |"]
     verdicts = []
@@ -196,7 +104,37 @@ def report(receipt: dict, higher_is_better: frozenset = frozenset()) -> tuple[st
         aa_txt = "" if aa_spread is None else f"{aa_spread:.4g}"
         lines.append(f"| {metric} | {aa_txt} | {v.base_median:.4g} | {v.cand_median:.4g} | {v.delta:+.4g} | "
                      f"{v.noise:.4g} | {v.verdict} |")
+    return lines, verdicts
+
+
+def report(receipt: dict, higher_is_better: frozenset = frozenset()) -> tuple[str, list[noise.Verdict]]:
+    """Markdown table: metric | A/A spread | base | candidate | delta | noise | verdict."""
+    a = arms(receipt)
+    lines, verdicts = _table(a.get("A", {}), a.get("B", {}), a.get("A2", {}), higher_is_better)
+    busy = [r["busy_pct_before"] for r in receipt["runs"] if r.get("busy_pct_before") is not None]
+    if busy and max(busy) > (receipt.get("quiet_threshold") or 100):
+        lines.append(f"\nWarning: the machine was up to {max(busy):.0f}% busy before some runs.")
     return "\n".join(lines), verdicts
+
+
+def compare_receipts(base_receipt: dict, cand_receipt: dict, base_arm: str = "A", cand_arm: str = "B",
+                     higher_is_better: frozenset = frozenset()) -> tuple[str, list[noise.Verdict]]:
+    """Compare arms from two different receipts (e.g. reuse last round's base for a new candidate).
+
+    The runs were not interleaved, so machine drift between the two sessions is not cancelled: treat the
+    verdict as a screen, and confirm a result you keep with an interleaved ``bench``.
+    """
+    ba, ca = arms(base_receipt), arms(cand_receipt)
+    aa = ba.get("A2", {}) if base_arm == "A" else {}
+    lines, verdicts = _table(ba.get(base_arm, {}), ca.get(cand_arm, {}), aa, higher_is_better)
+    warn = ["", "Cross-receipt comparison: the two sides were not interleaved, so drift between sessions is not "
+            "cancelled. Use it to screen; confirm with an interleaved bench before claiming a gain."]
+    for key in ("cpus", "parallel"):
+        if base_receipt.get(key) != cand_receipt.get(key):
+            warn.append(f"Warning: {key} differs ({base_receipt.get(key)} vs {cand_receipt.get(key)}).")
+    if base_receipt.get("env", {}).get("platform") != cand_receipt.get("env", {}).get("platform"):
+        warn.append("Warning: the receipts come from different platforms.")
+    return "\n".join(lines + warn), verdicts
 
 
 def save(receipt: dict, path: Path) -> None:

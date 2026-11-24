@@ -8,7 +8,7 @@ import os
 import textwrap
 import threading
 
-from speedloop import bench, exact, ledger, noise, registry
+from speedloop import bench, exact, ledger, machine, noise, proc, registry
 from speedloop.trace import Tracer
 
 
@@ -40,14 +40,14 @@ class BenchTests(unittest.TestCase):
         self.assertEqual(bench.schedule(1, 1), ["A", "A2", "A2", "A", "A", "B", "B", "A"])
 
     def test_metric_lines(self):
-        self.assertEqual(bench.parse_metrics("x\nSPEEDLOOP_METRIC step=0.5\nSPEEDLOOP_METRIC peak_mib=12\n"),
+        self.assertEqual(proc.parse_metrics("x\nSPEEDLOOP_METRIC step=0.5\nSPEEDLOOP_METRIC peak_mib=12\n"),
                          {"step": 0.5, "peak_mib": 12.0})
 
     def test_run_and_report(self):
         py = sys.executable
         receipt = bench.run([py, "-c", "print('SPEEDLOOP_METRIC work=2.0')"],
                             [py, "-c", "print('SPEEDLOOP_METRIC work=1.0')"], pairs=1, aa_pairs=1, warmup=0,
-                            progress=lambda *_: None)
+                            progress=lambda *_: None, lock=False, quiet_threshold=None)
         self.assertEqual([r["arm"] for r in receipt["runs"]], bench.schedule(1, 1))
         table, verdicts = bench.report(receipt)
         self.assertIn("| work |", table)
@@ -200,12 +200,12 @@ class CpuLimitTests(unittest.TestCase):
             print('SPEEDLOOP_METRIC omp=' + os.environ['OMP_NUM_THREADS'])
         """)
         receipt = bench.run([sys.executable, "-c", probe], [sys.executable, "-c", probe], pairs=1, aa_pairs=0,
-                            warmup=0, progress=lambda *_: None, cpus=1)
+                            warmup=0, progress=lambda *_: None, cpus=1, lock=False, quiet_threshold=None)
         a = bench.arms(receipt)["A"]
         self.assertEqual(a["cores"], [1.0, 1.0])
         self.assertEqual(a["omp"], [1.0, 1.0])
         if sys.platform == "win32":   # our own mask is restored after each spawn
-            self.assertGreater(bin(bench._win_affinity()).count("1"), 1)
+            self.assertGreater(bin(proc.win_affinity()).count("1"), 1)
 
 
 if __name__ == "__main__":

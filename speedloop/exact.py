@@ -9,6 +9,10 @@ compares a fresh output folder against it:
   rounding-level change can be told apart from a real one;
 * anything else -> ``differs``.
 
+Every changed numeric file gets a budget verdict: ``adopt`` (max difference <= 1, rounding level),
+``ask`` (<= 3: look at the before/after/diff sheet and decide) or ``reject``. ``sheet`` writes that
+sheet for image outputs at full resolution.
+
 A golden must be self-contained: everything it needs lives inside its own folder.
 """
 from __future__ import annotations
@@ -79,8 +83,32 @@ def numeric_diff(a: Path, b: Path) -> dict | None:
     return out
 
 
-def check(outputs: Path, golden: Path) -> dict:
-    """-> {"identical": bool, "files": {rel: result}}"""
+ADOPT_MAX = 1.0  # max |difference| (in output units, e.g. 8-bit levels) a person needn't look at
+ASK_MAX = 3.0    # up to this, a person decides from before/after/diff sheets; above it, reject
+
+ORDER = ("identical", "adopt", "ask", "reject")
+
+
+def budget(stats: dict | None, adopt_max: float = ADOPT_MAX, ask_max: float = ASK_MAX) -> str:
+    """identical | adopt | ask | reject, from ``numeric_diff`` stats (None = not numeric -> ask)."""
+    if stats is None:
+        return "ask"
+    worst = 0.0
+    for s in stats.values():
+        if s.get("shape_mismatch"):
+            return "reject"
+        worst = max(worst, s["max_abs"])
+    if worst == 0:
+        return "identical"
+    return "adopt" if worst <= adopt_max else "ask" if worst <= ask_max else "reject"
+
+
+def check(outputs: Path, golden: Path, adopt_max: float = ADOPT_MAX, ask_max: float = ASK_MAX) -> dict:
+    """-> {"identical": bool, "verdict": identical|adopt|ask|reject, "files": {rel: result}}
+
+    Bytes equal -> identical. Otherwise numeric files get difference stats and a budget verdict; other
+    files that differ need a person ("ask"). Missing files reject; new files ask.
+    """
     manifest = json.loads((golden / MANIFEST).read_text(encoding="utf-8"))["files"]
     current = set(_files(outputs))
     results = {}
@@ -91,7 +119,38 @@ def check(outputs: Path, golden: Path) -> dict:
             results[rel] = {"status": "identical"}
         else:
             stats = numeric_diff(golden / rel, outputs / rel)
-            results[rel] = {"status": "differs", **({"numeric": stats} if stats else {})}
+            results[rel] = {"status": "differs", "budget": budget(stats, adopt_max, ask_max),
+                            **({"numeric": stats} if stats else {})}
     for rel in sorted(current - set(manifest)):
         results[rel] = {"status": "new"}
-    return {"identical": all(r["status"] == "identical" for r in results.values()), "files": results}
+    per_file = []
+    for r in results.values():
+        per_file.append({"identical": "identical", "missing": "reject", "new": "ask"}.get(r["status"])
+                        or r["budget"])
+    verdict = max(per_file, key=ORDER.index) if per_file else "identical"
+    return {"identical": all(r["status"] == "identical" for r in results.values()), "verdict": verdict,
+            "files": results}
+
+
+def sheet(golden_file: Path, new_file: Path, out: Path, amplify: float | None = None) -> Path:
+    """Full-resolution before | after | difference image for one image output (needs numpy + Pillow).
+
+    The difference panel is |after - before| per pixel (max over channels), scaled so the largest
+    difference is white, or multiplied by ``amplify``. Judge a change at full size, never from thumbnails.
+    """
+    import numpy as np
+    from PIL import Image
+    a = _arrays(golden_file)[""]
+    b = _arrays(new_file)[""]
+    if a.shape != b.shape:
+        raise ValueError(f"shape differs: {a.shape} vs {b.shape}")
+    as_rgb = lambda x: np.repeat(x[..., None], 3, axis=2) if x.ndim == 2 else x[..., :3]  # noqa: E731
+    a8, b8 = as_rgb(a).astype(np.uint8), as_rgb(b).astype(np.uint8)
+    d = np.abs(as_rgb(a).astype(np.float64) - as_rgb(b).astype(np.float64)).max(axis=2)
+    scale = amplify if amplify else (255.0 / d.max() if d.max() > 0 else 0.0)
+    heat = np.clip(d * scale, 0, 255).astype(np.uint8)
+    gap = np.full((a8.shape[0], 8, 3), 128, np.uint8)
+    canvas = np.concatenate([a8, gap, b8, gap, np.repeat(heat[..., None], 3, axis=2)], axis=1)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(canvas).save(out)
+    return out
